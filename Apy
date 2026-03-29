@@ -1,0 +1,75 @@
+from flask import Flask, request, jsonify, render_template
+import sqlite3
+import re, math
+from flask_cors import CORS
+
+app = Flask(__name__)
+CORS(app)
+
+def get_db_connection():
+    conn = sqlite3.connect('doctors.db')
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def haversine(lat1, lon1, lat2, lon2):
+    R = 6371
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
+    c = 2*math.atan2(math.sqrt(a), math.sqrt(1-a))
+    return R * c
+
+def parse_query(query):
+    radius = 5
+    r = re.search(r'(\d+)\s*km', query)
+    if r: radius = float(r.group(1))
+    
+    specialties = ['general','medicine','homeopathy','pediatric','ENT','gynecology']
+    specialty = ''
+    for s in specialties:
+        if s.lower() in query.lower():
+            specialty = s
+            break
+    loc_match = re.search(r'near\s+([a-zA-Z ]+)', query)
+    location = loc_match.group(1) if loc_match else 'Raiganj'
+    return specialty, location.strip(), radius
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/search', methods=['GET'])
+def search_doctors():
+    query = request.args.get('q', '')
+    user_lat = float(request.args.get('lat', 25.6190))
+    user_lon = float(request.args.get('lon', 88.1240))
+    
+    specialty, location, radius = parse_query(query)
+    
+    conn = get_db_connection()
+    doctors = conn.execute(
+        "SELECT name, phone, specialty, address, latitude, longitude FROM doctors WHERE address LIKE ? OR specialty LIKE ?",
+        ('%'+location+'%', '%'+specialty+'%')
+    ).fetchall()
+    conn.close()
+    
+    results = []
+    for doc in doctors:
+        if doc['latitude'] and doc['longitude']:
+            dist = haversine(user_lat, user_lon, doc['latitude'], doc['longitude'])
+            if dist <= radius:
+                results.append({
+                    'name': doc['name'],
+                    'phone': doc['phone'],
+                    'specialty': doc['specialty'],
+                    'address': doc['address'],
+                    'lat': doc['latitude'],
+                    'lon': doc['longitude'],
+                    'distance_km': round(dist,2)
+                })
+    results.sort(key=lambda x: x['distance_km'])
+    return jsonify(results)
+
+if __name__ == '__main__':
+    app.run(debug=True)
